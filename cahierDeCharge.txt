@@ -1,0 +1,511 @@
+///////////////////////////////////////////////////////////////Bill of Materials:///////////////////////////////////////////////////////////////////////////////////
+
+Body (you can adapt it for your needs or available materials):
+2 X Wood squares (80X80mm)
+3 X Binder clips
+2 X Wood wheels (diameter: 50mm)
+1 X Ball caster
+9 X Elastic bands
+3M Command frame strip
+Plastic joints for sensor fix
+BreadBoard and wiring
+2 X sets of 4XNi-Metal Hydride Battery (5V each set)
+2 X SM-S4303R Continuous Rotation 360 Degree Plastic Servo
+Arduino Nano
+HC-06 Bluetooth module
+5 X Line sensors (TCRT5000 4CH Infrared Line Track Follower Sensor Module + 1 independent Track sensor)
+2 X ZX03 (based on TCRT5000) Reflective Infrared Sensors (Analog output)
+1 LED
+1 button
+
+//////////////////////////////////////////////////////////////////NOTE01://///////////////////////////////////////////////////////////////////////////////////////////
+
+The new array of now 7 sensors, is mounted on a way that the 5 original ones are exclusively used for PID control (and detection of the "full line", explained later) and the 2 new ones, left to be used exclusively for LEFT and RIGHT intersection detection.
+
+As a quick review, let's remember how the 5 original "digital" sensors work:
+
+If one sensor is centered with relation to the black line, only that specific sensor will produce a HIGH. By other side, the space between sensors should be calculated to allow that 2 sensors can cover the full width of the black line simultaneously, also producing a HIGH signal on both sensors.
+
+How the 2 new "analog" sensors work:
+
+If one of the sensors is centered with relation to the black line, the output will be an analog value, usually producing an output at Arduino ADC bellow "100" (remember that the ADC produces an output from 0 to 1023). With lighter surfaces, the output value will be higher (I tested 500 to 600 over white paper, for example). This value must be tested on different situations of light and surface materials to define the correct THRESHOLD constant to be used in your case (see the picture here).
+
+Looking at the Arduino code, each one of the sensors will be defined with a specific name (consider that the original Line Follow Sensor more to the Left must be assigned with a label "0"):
+
+
+const int lineFollowSensor0 = 12; //Using Digital input
+const int lineFollowSensor1 = 18; //Using Analog Pin A4 as Digital input
+const int lineFollowSensor2 = 17; //Using Analog Pin A3 as Digital input
+const int lineFollowSensor3 = 16; //Using Analog Pin A2 as Digital input
+const int lineFollowSensor4 = 19; //Using Analog Pin A5 as Digital input
+const int farRightSensorPin = 0;  //Analog Pin A0
+const int farLeftSensorPin = 1;   //Analog Pin A1
+
+
+To remember, the possible 5 original sensor array output when following a line are:
+
+
+1 1 1 1 1
+0 0 0 0 0
+0 0 0 0 1
+0 0 0 1 1
+0 0 0 1 0
+0 0 1 1 0
+0 0 1 0 0
+0 1 1 0 0
+0 1 0 0 0
+1 1 0 0 0
+1 0 0 0 0
+
+
+With the addition of the 2 new ones, their possible outputs are:
+
+Far LEFT Sensor: Analog Output greater or lower than a THRESHOLD
+Far RIGHT Sensor: Analog Output greater or lower than a THRESHOLD
+In order to storage the values of each sensor an array variable is created for the original 5 digital sensors:
+
+int LFSensor[5]={0, 0, 0, 0, 0};
+And two integer variables for the 2 new analog sensors:
+
+int farRightSensor = 0;
+int farLeftSensor = 0;
+
+Each position of the array and variables will be constantly updated with the output of each one of the sensors:
+
+
+LFSensor[0] = digitalRead(lineFollowSensor0);
+LFSensor[1] = digitalRead(lineFollowSensor1);
+LFSensor[2] = digitalRead(lineFollowSensor2);
+LFSensor[3] = digitalRead(lineFollowSensor3);
+LFSensor[4] = digitalRead(lineFollowSensor4);
+farRightSensor = analogRead(farRightSensorPin);
+farLeftSensor = analogRead(farLeftSensorPin);
+
+
+Having 5 sensors, as saw in the Follower Line Robot project, permits the generation of an "error variable" that will help to control the robot's position over the line. Also, a variable called "mode" will be used for definition if the robot is following a line, over a continuous line, an intersection or no line at all.
+
+This variable "mode" will be also used with the "Far LEFT/RIGHT" sensors. For representation, let's consider the far left and right sensors having 3 possible states:
+
+H (higher than THRESHOLD),
+L (smaller than THRESHOLD) and
+X (irrelevant).
+
+For the digital outputs , will the usual 0, 1 and we will also introduce the X:
+
+H 0 X X X X L ==> mode = RIGHT_TURN; error = 0; 
+L X X X X 0 H ==> mode = LEFT_TURN; error = 0;
+X 0 0 0 0 0 X ==> mode = NO_LINE; error = 0;
+H 0 0 0 0 1 H ==> mode = FOLLOWING_LINE; error = 4;
+H 0 0 0 1 1 H ==> mode = FOLLOWING_LINE; error = 3;
+H 0 0 0 1 0 H ==> mode = FOLLOWING_LINE; error = 2;
+H 0 0 1 1 0 H ==> mode = FOLLOWING_LINE; error = 1;
+H 0 0 1 0 0 H ==> mode = FOLLOWING_LINE; error = 0;
+H 0 1 1 0 0 H ==> mode = FOLLOWING_LINE; error = -1;
+H 0 1 0 0 0 H ==> mode = FOLLOWING_LINE; error = -2
+H 1 1 0 0 0 H ==> mode = FOLLOWING_LINE; error = -3;
+H 1 0 0 0 0 H ==> mode = FOLLOWING_LINE; error = -4;
+X 1 1 1 1 1 X ==> mode = CONT_LINE; error = 0;
+So, implementing the above logic in the function:
+
+void readLFSsensors()
+
+will return the variables "mode" and "error" that will be used at the program logic.
+
+It is important to test the logic of the sensors before following with the project. The bellow function is included in the code and can be used for testing purposes:
+
+
+void testSensorLogic(void) 
+{
+  Serial.print (farLeftSensor);
+  Serial.print (" <== LEFT RIGH==> ");
+  Serial.print (farRightSensor);
+  Serial.print (" mode: ");
+  Serial.print (mode);
+  Serial.print (" error:");
+  Serial.println (error);
+}
+
+
+
+////////////////////////////////////////////////////////////NOTE02:Solving the Maze - the Left Hand Rule/////////////////////////////////////////////////////////
+
+
+As discussed at introduction, the majority of mazes however complex their design may appear, were essentially formed from one continuous wall with many junctions and branches. If the wall surrounding the goal of a maze is connected to the perimeter of the maze at the entrance, the maze can always be solved by keeping one hand in contact with the wall, however many detours that may involve. These ‘simple’ mazes are correctly known as "Simply-connected."
+
+Searching at Wikipedia, we learn that:
+
+"The Wall Follower is the best-known rule for traversing mazes. It is also known as either the left-hand rule or the right-hand rule. If the maze is simply connected, that is, all its walls are connected together or to the maze's outer boundary, then by keeping one hand in contact with one wall of the maze the solver is guaranteed not to get lost and will reach a different exit if there is one; otherwise, he or she will return to the entrance having traversed every corridor next to that connected section of walls at least once."
+
+In short, the Left-Hand Rule can be described like:
+
+Place your left hand on the wall.
+Begin walking forward
+At every intersection, and throughout the maze, keep your left hand touching the wall on your left.
+Eventually, you will reach the end of the maze. You will probably not go the shortest and most direct way, but you will get there.
+So, the key here is to identify the intersections, defining what course to take based on the above rules. Specifically in our kind of 2D Maze, we can find 8 different types of intersections (see the first picture above):
+
+Looking the picture, we can realize that the possible actions at intersections are:
+
+At a "Cross"
+Go to Left, or
+Go to Right, or
+Go Straight
+At a "T":
+Go to Left, or
+Go to Right
+At a "Right Only":
+Go to Right
+At a "Left Only":
+Go to Left
+At "Straight or Left":
+Go to Left, or
+Go Straight
+At "Straight or Right":
+Go to Right, or
+Go Straight
+At a "Dead End":
+Go back ("U turn")
+At "End of Maze":
+Stop
+But, applying the "Left-Hand Rule", the actions will be reduced to one option each:
+
+At a "Cross": Go to Left
+At a "T": Go to Left
+At a "Right Only": Go to Right
+At a "Left Only": Go to Left
+At a "Straight or Left": Go to Left
+At a "Straight or Right": Go Straight
+At a "Dead End": Go back ("U turn")
+At the "End of Maze": Stop
+We are almost there! "Be calm!"
+
+When the robot reaches a "Dead End" or the "End of a Maze", it is easy to identify them, because do not exist ambiguous situations (we have already implemented those actions on the Line Follower Robot, remember?). The problem is when the robot finds a "LINE" for example, because a line can be a "Cross" (1) or a "T" (2). Also when it reaches a "LEFT or RIGHT TURN", those can be the a simple turn (options 3 or 4) or options to go straight (5 or 6). To discover exactly on what type of intersection the robot is, an additional step must be taken: the robot must run an "extra inch" and see what is next (see the second picture above, as an example).
+
+So, in terms of flow, the possible actions can be now describe as:
+
+At a "DEAD END":
+Go back ("U turn")
+At a "LINE":
+Run an extra inch
+If there is a line: It is a "Cross" ==> Go to LEFT
+If There is no line: it is a "T" ==> Go to LEFT
+If there is another line: it is the "End of Maze" ==> STOP
+At a "RIGHT TURN":
+Run an extra inch
+if there is a line: It is a Straight or Right ==> Go STRAIGHT
+If there is no line: it is a Right Only ==> Go to RIGHT
+At a "LEFT TURN":
+Run an extra inch
+if there is a line: It is a Straight or LEFT ==> Go to LEFT
+If there is no line: it is a LEFT Only ==> Go to LEFT
+Note that in fact, In case of a "LEFT TURN", you can skip the test, because you will take LEFT anyway. I left the explanation more generic only for clarity. At the real code I will skip this test.
+
+
+////////////////////////////////////////////////////NOTE03:Implementing the "Left Hand on the Wall" Algorithm at Arduino Code//////////////////////////////////////
+
+
+Once we have the readLFSsensors() function modified to include the extra 2 sensors, we can re-write the Loop Function to run the algorithm as described on the last Step:
+
+
+void loop()
+{
+  readLFSsensors();
+  switch (mode)
+  {
+    case NO_LINE:
+       motorStop();
+       goAndTurn (LEFT, 180);
+       break;
+    case CONT_LINE:
+       runExtraInch();
+       readLFSsensors();
+       if (mode == CONT_LINE) mazeEnd();
+       else goAndTurn (LEFT, 90); // or it is a "T" or "Cross"). In both cases, goes to LEFT
+       break;
+    case RIGHT_TURN:
+       runExtraInch();
+       readLFSsensors();
+       if (mode == NO_LINE) goAndTurn (RIGHT, 90);
+       break;
+    case LEFT_TURN:
+       goAndTurn (LEFT, 90);
+       break;
+    case FOLLOWING_LINE:
+       followingLine();
+       break;
+  }
+}
+
+
+Some new functions appear here:
+
+followingLine() is the same used with the Following Line Robot where, if it is only following a line, it must calculatePID(); and control the motors depending of PID values: motorPIDcontrol();
+
+runExtraInch(): will push the robot forward just a little bit. How much the robot will run will depend of the time that you use in the delay function, before you command the motor to stop.
+
+
+void runExtraInch(void)
+{
+  motorPIDcontrol();
+  delay(extraInch);
+  motorStop();
+}
+goAndTurn (direction, angle): this special function is important because you can not turn the robot as soon you realize the type of intersection you are. Remember that we projected a Differential Robot that when making turns, it "turns around its axe" and so, to move 90o and continuously follow the line, the center of the wheels must be aligned with the center of intersection. Once the line of sensors is ahead of its axe, you must run the robot forward to align them. The constant of time adjGoAndTurn must be adjusted depending on of the distance between axe and sensor line ("d"), speed and size of the wheels (see the above picture for illustration).
+
+void goAndTurn(int direction, int degrees)
+{
+  motorPIDcontrol();
+  delay(adjGoAndTurn);
+  motorTurn(direction, degrees);
+}
+
+At this point, the robot is in fact "solving a maze"! You just finish the "First Pass". Does not matter where you start inside a maze, you will always reach the end.
+
+
+///////////////////////////////////////////////////////////////////NOTE04:Storing the Path/////////////////////////////////////////////////////////////////
+
+
+Let's consider the example as shown in the above photo. At the chosen starting point, the robot will find 15 Intersections before reaching the end of the Maze:
+
+Left (L)
+Back (B)
+Left (L)
+Left (L)
+Left (L)
+Back (B)
+Straight (S)
+Back (B)
+Left (L)
+Left (L)
+Back (B)
+Straight (S)
+Left (L)
+Left (L)
+End
+What must be done in any of those intersections, is to save the each action done exactly at same sequence that it happens. For that, let's create a new variable (array) that will store the path that the robot has taken:
+
+char path[100] = " ";
+We must also create 2 indexes variables to be used together with the array:
+
+unsigned char pathLength = 0; // the length of the path
+int pathIndex = 0; // used to reach an specific array element.
+So, if we run the example shown in the picture, we will end with:
+
+path = [LBLLLBSBLLBSLL]
+
+and pathLengh = 14
+
+
+/////////////////////////////////////////////////////////////NOTE05:Simplifying (optimizing) the Path////////////////////////////////////////////////////////////
+
+
+Let's return to our example. Looking the first group of intersections, we realized the the first left branch is in fact a "Dead End" and so, if the robot instead of a "Left-Back-Left" only passed straight at that first intersection, a lot of energy and time would be saved! In other words, a sequence "LBL" in fact would be the same as "S". That's is exactly how the full path can be optimized. If you analyze all possibilities where a "U turn" is used, the set of 3 intersections where this " U-Turn" ("B") appears ("xBx") can be reduced to only one.
+
+The above is only one example, bellow you can find the complete list of possibilities (try it):
+
+LBR = B
+LBS = R
+RBL = B
+SBL = R
+SBS = B
+LBL = S
+Taking the full path or our example, we can reduce it:
+
+path = [LBLLLBSBLLBSLL] ==> LBL = S
+
+path = [SLLBSBLLBSLL] ==> LBS = R
+
+path = [SLRBLLBSLL] ==> RBL = B
+
+path = [SLBLBSLL] ==> LBL = S
+
+path = [SSBSLL] ==> SBS = B
+
+path = [SBLL] ==> SBL = R
+
+path = [RL]
+
+Amazing! Looking at the example it is very clear that if the robot takes RIGHT at first intersection and after that, a LEFT, it will reach the End of Maze in the shortest path!
+
+The First Path of Maze Solver total code will be consolidated in the function mazeSolve(). This function is in fact the loop() function used before, but incorporating all those steps of storing and path optimization.
+
+When the first path ended, the path[] array will have the optimized path. A new variable is introduced
+
+unsigned int status = 0; // solving = 0; reach Maze End = 1
+Bellow the First Path function:
+
+void mazeSolve(void)
+{
+    while (!status)
+    {
+        readLFSsensors();  
+        switch (mode)
+        {   
+          case NO_LINE:  
+            motorStop();
+            goAndTurn (LEFT, 180);
+            recIntersection('B');
+            break;
+          
+          case CONT_LINE: 
+            runExtraInch();
+            readLFSsensors();
+            if (mode != CONT_LINE) {goAndTurn (LEFT, 90); recIntersection('L');} // or it is a "T" or "Cross"). In both cases, goes to LEFT
+            else mazeEnd(); 
+            break;
+            
+         case RIGHT_TURN: 
+            runExtraInch();
+            readLFSsensors();
+            if (mode == NO_LINE) {goAndTurn (RIGHT, 90); recIntersection('R');}
+            else recIntersection('S');
+            break;   
+            
+         case LEFT_TURN: 
+            goAndTurn (LEFT, 90); 
+            recIntersection('L');
+            break;   
+         
+         case FOLLOWING_LINE: 
+            followingLine();
+            break;      
+        
+         }
+    }
+}
+
+Here a new function was introduced: recIntersection (direction)
+
+This function will be used for store the intersection and also to call another function simplifyPath(), that will reduce the group of 3 intersections involving an "U-Turn" as we saw before.
+
+void recIntersection(char direction)
+{
+  path[pathLength] = direction; // Store the intersection in the path variable.
+  pathLength ++;
+  simplifyPath(); // Simplify the learned path.
+}
+The CREDIT for the simplifyPath() function is to Patrick McCabe for the path Solving Code (for details, please visit https://patrickmccabemakes.com! The strategy of Path simplification is that whenever we encounter a sequence xBx, we can simplify it by cutting out the dead end. For example, LBL ==> S as we saw at the example.
+
+void simplifyPath()
+{
+  // only simplify the path if the second-to-last turn was a 'B'
+  if(pathLength < 3 || path[pathLength-2] != 'B')
+    return;
+
+  int totalAngle = 0;
+  int i;
+  for(i=1;i<=3;i++)
+  {
+    switch(path[pathLength-i])
+    {
+      case 'R':
+        totalAngle += 90;
+	break;
+      case 'L':
+	totalAngle += 270;
+	break;
+      case 'B':
+	totalAngle += 180;
+	break;
+    }
+  }
+
+  // Get the angle as a number between 0 and 360 degrees.
+totalAngle = totalAngle % 360;
+
+  // Replace all of those turns with a single one.
+  switch(totalAngle)
+  {
+    case 0:
+	path[pathLength - 3] = 'S';
+	break;
+    case 90:
+	path[pathLength - 3] = 'R';
+	break;
+    case 180:
+	path[pathLength - 3] = 'B';
+	break;
+    case 270:
+	path[pathLength - 3] = 'L';
+	break;
+  }
+
+  // The path is now two steps shorter.
+  pathLength -= 2;
+  
+} 
+NOTE06:Second Pass: Solving the Maze As Fast As Possible!
+The main program: loop () is simple like that:
+
+void loop() 
+{
+  ledBlink(1);
+  readLFSsensors(); 
+  
+  mazeSolve(); // First pass to solve the maze
+  ledBlink(2);
+  while (digitalRead(buttonPin) { }
+  pathIndex = 0;
+  status = 0;
+  
+  mazeOptimization(); // Second Pass: run the maze as fast as possible
+  ledBlink(3);
+  while (digitalRead(buttonPin) { }
+  mode = STOPPED;
+  status = 0; // 1st pass
+  pathIndex = 0;
+  pathLength = 0;
+}
+So, when the First Pass ends, what we must to do it is only feed the robot with the optimized path array. It will start run and when a intersection is found, it will now define what to do based on what it is stored at path[].
+
+void mazeOptimization (void)
+{
+  while (!status)
+  {
+    readLFSsensors();  
+    switch (mode)
+    {
+      case FOLLOWING_LINE:
+        followingLine();
+        break;    
+      case CONT_LINE:
+        if (pathIndex >= pathLength) mazeEnd (); 
+        else {mazeTurn (path[pathIndex]); pathIndex++;}
+        break;  
+      case LEFT_TURN:
+        if (pathIndex >= pathLength) mazeEnd (); 
+        else {mazeTurn (path[pathIndex]); pathIndex++;}
+        break;  
+      case RIGHT_TURN:
+        if (pathIndex >= pathLength) mazeEnd (); 
+        else {mazeTurn (path[pathIndex]); pathIndex++;}
+        break;   
+    }    
+   }  
+}
+To command what to do, a new function mazeTurn(path[]) was created.
+
+The function mazeTurn (path[]) will be:
+
+void mazeTurn (char dir) 
+{
+  switch(dir)
+  {
+    case 'L': // Turn Left
+       goAndTurn (LEFT, 90);      
+       break;   
+    
+    case 'R': // Turn Right
+       goAndTurn (RIGHT, 90);     
+       break;   
+       
+    case 'B': // Turn Back
+       goAndTurn (RIGHT, 800);     
+       break;   
+       
+    case 'S': // Go Straight
+       runExtraInch(); 
+       break;
+  }
+}
+The second pass is done!
